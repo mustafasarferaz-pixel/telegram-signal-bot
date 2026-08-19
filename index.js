@@ -1,11 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-
-if (!TOKEN) {
-  console.error("ERROR: TELEGRAM_BOT_TOKEN is missing.");
-  process.exit(1);
-}
+// توکن مستقیم قرار داده شد تا نیازی به Variables در Railway نباشد
+const TOKEN = '8665527234:AAGLLsxc2FHzpMzXQc9xL_7L81zGPSZY6so';
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
@@ -37,7 +33,7 @@ function calculateRSI(prices, period = 14) {
       avgGain = (avgGain * 13 + diff) / 14;
       avgLoss = (avgLoss * 13) / 14;
     } else {
-      avgGain = (avgGain * 13) / 14;
+      avgGain = (avgGain * 13 + diff) / 14;
       avgLoss = (avgLoss * 13 - diff) / 14;
     }
   }
@@ -47,7 +43,6 @@ function calculateRSI(prices, period = 14) {
 
 async function analyzeOptimalCrypto(symbol) {
   try {
-    // استفاده از fetch داخلی Node.js
     const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${INTERVAL}&limit=100`);
     const data = await res.json();
     
@@ -89,9 +84,9 @@ bot.on('message', async (msg) => {
       results.push(res);
     }
 
-    const responseText = `📊 **گزارش سیگنال تایم‌فریم ${INTERVAL}:**\n\n` + results.join('\n');
+    const responseText = `📊 **گزارش سیگنال کریپتو (${INTERVAL}):**\n\n` + results.join('\n');
     bot.sendMessage(msg.chat.id, responseText, { parse_mode: 'Markdown' });
   }
 });
 
-console.log("Bot running successfully...");
+console.log("Bot running successfully with direct token!");
