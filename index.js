@@ -1,5 +1,4 @@
 const TelegramBot = require('node-telegram-bot-api');
-const fetch = require('node-fetch');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -10,10 +9,7 @@ if (!TOKEN) {
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// ارزهای دیجیتال اصلی غیر OTC
 const CRYPTO_PAIRS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
-
-// تایم‌فریم طلایی (5m بهترین گزینه است)
 const INTERVAL = '5m';
 
 function calculateEMA(prices, period) {
@@ -51,6 +47,7 @@ function calculateRSI(prices, period = 14) {
 
 async function analyzeOptimalCrypto(symbol) {
   try {
+    // استفاده از fetch داخلی Node.js
     const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${INTERVAL}&limit=100`);
     const data = await res.json();
     
@@ -66,15 +63,12 @@ async function analyzeOptimalCrypto(symbol) {
     const avgVolume = volumes.slice(-10).reduce((a, b) => a + b, 0) / 10;
     const isVolumeStrong = currentVolume > (avgVolume * 1.2);
 
-    // فیلتر ورود ۵ دقیقه‌ای خرید
     if (currentPrice > ema200 && currentPrice > ema50 && rsi < 30 && isVolumeStrong) {
       return `🟢 **${symbol}**: CALL (خرید) | تایم‌فریم: ${INTERVAL}`;
     } 
-    // فیلتر ورود ۵ دقیقه‌ای فروش
     else if (currentPrice < ema200 && currentPrice < ema50 && rsi > 70 && isVolumeStrong) {
       return `🔴 **${symbol}**: PUT (فروش) | تایم‌فریم: ${INTERVAL}`;
     } 
-    // عدم تایید فیلترها
     else {
       return `⏳ **${symbol}**: WAIT (صبر - شرایط مناسب نیست)`;
     }
@@ -100,4 +94,4 @@ bot.on('message', async (msg) => {
   }
 });
 
-console.log("Optimal Bot Running on 5m interval...");
+console.log("Bot running successfully...");
