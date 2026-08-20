@@ -1,22 +1,28 @@
-// ======================================================
-// STRICT CRYPTO TELEGRAM SIGNAL BOT
-// ======================================================
-// Command:
-// signal
-// /signal
-//
-// Features:
-// - Crypto only
-// - Automatically chooses the best crypto
-// - Automatically chooses 1m / 5m / 15m
-// - Strict multi-confirmation analysis
-// - 90% minimum confidence
-// - 95% = very strong setup
-// - If confirmation is weak -> WAIT
-// - No Martingale
-// - No Quotex account connection
-// - Uses public Kraken market data
-// ======================================================
+"use strict";
+
+/*
+  TELEGRAM CRYPTO SIGNAL BOT
+
+  Commands:
+  /signal
+  signal
+
+  Bot:
+  - فقط Crypto
+  - بدون OTC
+  - بررسی 1m / 5m / 15m
+  - انتخاب خودکار بهترین Crypto
+  - انتخاب خودکار بهترین Timeframe
+  - چند تأیید تکنیکال
+  - اگر شرایط کافی نباشد => WAIT
+  - بدون Martingale
+  - بدون اتصال به حساب Quotex
+  - فقط Telegram Bot Token لازم دارد
+
+  IMPORTANT:
+  این نسخه از Binance Public API برای داده بازار استفاده می‌کند.
+  بنابراین قیمت/کندل آن تضمیناً با Quotex یکسان نیست.
+*/
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -25,1069 +31,750 @@ if (!TELEGRAM_BOT_TOKEN) {
   process.exit(1);
 }
 
-const TELEGRAM_URL =
-  `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-
-// ------------------------------------------------------
+// ================================
 // SETTINGS
-// ------------------------------------------------------
+// ================================
 
-const TIMEFRAMES = [1, 5, 15];
+const MIN_CONFIDENCE = 90;
+const IDEAL_CONFIDENCE = 95;
 
-// Crypto pairs available through Kraken public API.
-// XBTUSD = BTC/USD
+const TIMEFRAMES = ["1m", "5m", "15m"];
+
 const COINS = [
-  "XBTUSD",
-  "ETHUSD",
-  "SOLUSD",
-  "XRPUSD",
-  "ADAUSD",
-  "DOGEUSD",
-  "LINKUSD",
-  "AVAXUSD"
+  "BTCUSDT",
+  "ETHUSDT",
+  "BNBUSDT",
+  "SOLUSDT",
+  "XRPUSDT",
+  "ADAUSDT",
+  "DOGEUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "LTCUSDT"
 ];
 
-const CANDLE_LIMIT = 250;
+const CANDLE_LIMIT = 100;
 
-// STRICT FILTER
-const MIN_CONFIDENCE = 90;
-const STRONG_CONFIDENCE = 95;
-
-// ------------------------------------------------------
-// TELEGRAM
-// ------------------------------------------------------
+// ================================
+// TELEGRAM API
+// ================================
 
 async function telegram(method, body = {}) {
+  const url =
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`;
 
-  const response = await fetch(
-    `${TELEGRAM_URL}/${method}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    }
-  );
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
 
   if (!response.ok) {
-    throw new Error(
-      `Telegram HTTP ${response.status}`
-    );
+    throw new Error(`Telegram HTTP ${response.status}`);
   }
 
   return response.json();
 }
 
-async function sendMessage(chatId, text) {
+// ================================
+// SEND MESSAGE
+// ================================
 
-  return telegram(
-    "sendMessage",
-    {
-      chat_id: chatId,
-      text
-    }
-  );
+async function sendMessage(chatId, text) {
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: text
+  });
 }
 
-// ------------------------------------------------------
-// MARKET DATA
-// ------------------------------------------------------
+// ================================
+// BINANCE MARKET DATA
+// ================================
 
-async function getCandles(pair, interval) {
-
+async function getCandles(symbol, interval) {
   const url =
-    `https://api.kraken.com/0/public/OHLC` +
-    `?pair=${encodeURIComponent(pair)}` +
-    `&interval=${interval}`;
+    "https://api.binance.com/api/v3/klines" +
+    `?symbol=${symbol}` +
+    `&interval=${interval}` +
+    `&limit=${CANDLE_LIMIT}`;
 
   const response = await fetch(url);
 
   if (!response.ok) {
-    throw new Error(
-      `Market HTTP ${response.status}`
-    );
+    throw new Error(`Market data HTTP ${response.status}`);
   }
 
   const data = await response.json();
 
-  if (
-    data.error &&
-    data.error.length > 0
-  ) {
-    throw new Error(
-      data.error.join(", ")
-    );
+  if (!Array.isArray(data)) {
+    throw new Error("Invalid market data.");
   }
 
-  const keys =
-    Object.keys(data.result || {})
-      .filter(
-        key => key !== "last"
-      );
-
-  if (keys.length === 0) {
-    throw new Error(
-      "No market data"
-    );
-  }
-
-  const rows =
-    data.result[keys[0]];
-
-  if (
-    !Array.isArray(rows) ||
-    rows.length < 80
-  ) {
-    throw new Error(
-      "Not enough candles"
-    );
-  }
-
-  return rows
-    .slice(-CANDLE_LIMIT)
-    .map(row => ({
-      time: Number(row[0]),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-      volume: Number(row[6])
-    }));
+  return data.map(c => ({
+    time: Number(c[0]),
+    open: Number(c[1]),
+    high: Number(c[2]),
+    low: Number(c[3]),
+    close: Number(c[4]),
+    volume: Number(c[5])
+  }));
 }
 
-// ------------------------------------------------------
+// ================================
 // EMA
-// ------------------------------------------------------
+// ================================
 
-function EMA(values, period) {
+function ema(values, period) {
+  if (values.length < period) return null;
 
-  if (
-    values.length < period
-  ) {
-    return null;
+  const multiplier = 2 / (period + 1);
+
+  let result = 0;
+
+  for (let i = 0; i < period; i++) {
+    result += values[i];
   }
 
-  const multiplier =
-    2 / (period + 1);
+  result /= period;
 
-  let result =
-    values
-      .slice(0, period)
-      .reduce(
-        (a, b) => a + b,
-        0
-      ) / period;
-
-  for (
-    let i = period;
-    i < values.length;
-    i++
-  ) {
-
+  for (let i = period; i < values.length; i++) {
     result =
-      (
-        values[i] - result
-      ) *
-      multiplier +
-      result;
+      (values[i] - result) * multiplier + result;
   }
 
   return result;
 }
 
-// ------------------------------------------------------
+// ================================
 // RSI
-// ------------------------------------------------------
+// ================================
 
-function RSI(
-  values,
-  period = 14
-) {
-
-  if (
-    values.length <
-    period + 2
-  ) {
-    return null;
-  }
+function calculateRSI(values, period = 14) {
+  if (values.length <= period) return null;
 
   let gains = 0;
   let losses = 0;
 
-  for (
-    let i = 1;
-    i <= period;
-    i++
-  ) {
-
-    const change =
-      values[i] -
-      values[i - 1];
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
 
     if (change >= 0) {
       gains += change;
     } else {
-      losses +=
-        Math.abs(change);
+      losses += Math.abs(change);
     }
   }
 
-  let avgGain =
-    gains / period;
+  let averageGain = gains / period;
+  let averageLoss = losses / period;
 
-  let avgLoss =
-    losses / period;
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
 
-  for (
-    let i = period + 1;
-    i < values.length;
-    i++
-  ) {
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
 
-    const change =
-      values[i] -
-      values[i - 1];
+    averageGain =
+      ((averageGain * (period - 1)) + gain) / period;
 
-    const gain =
-      change > 0
-        ? change
-        : 0;
-
-    const loss =
-      change < 0
-        ? Math.abs(change)
-        : 0;
-
-    avgGain =
-      (
-        avgGain *
-          (period - 1) +
-        gain
-      ) / period;
-
-    avgLoss =
-      (
-        avgLoss *
-          (period - 1) +
-        loss
-      ) / period;
+    averageLoss =
+      ((averageLoss * (period - 1)) + loss) / period;
   }
 
-  if (avgLoss === 0) {
-    return 100;
-  }
+  if (averageLoss === 0) return 100;
 
-  const rs =
-    avgGain / avgLoss;
+  const rs = averageGain / averageLoss;
 
-  return (
-    100 -
-    100 / (1 + rs)
-  );
+  return 100 - (100 / (1 + rs));
 }
 
-// ------------------------------------------------------
-// MACD
-// ------------------------------------------------------
-
-function MACD(values) {
-
-  const ema12 =
-    EMA(values, 12);
-
-  const ema26 =
-    EMA(values, 26);
-
-  if (
-    ema12 === null ||
-    ema26 === null
-  ) {
-    return null;
-  }
-
-  return ema12 - ema26;
-}
-
-// ------------------------------------------------------
+// ================================
 // ATR
-// ------------------------------------------------------
+// ================================
 
-function ATR(
-  candles,
-  period = 14
-) {
-
-  if (
-    candles.length <
-    period + 2
-  ) {
-    return null;
-  }
+function calculateATR(candles, period = 14) {
+  if (candles.length <= period) return null;
 
   const trs = [];
 
-  for (
-    let i = 1;
-    i < candles.length;
-    i++
-  ) {
+  for (let i = 1; i < candles.length; i++) {
+    const current = candles[i];
+    const previous = candles[i - 1];
 
-    const current =
-      candles[i];
-
-    const previous =
-      candles[i - 1];
-
-    const tr =
-      Math.max(
-        current.high -
-          current.low,
-
-        Math.abs(
-          current.high -
-          previous.close
-        ),
-
-        Math.abs(
-          current.low -
-          previous.close
-        )
-      );
+    const tr = Math.max(
+      current.high - current.low,
+      Math.abs(current.high - previous.close),
+      Math.abs(current.low - previous.close)
+    );
 
     trs.push(tr);
   }
 
-  const recent =
-    trs.slice(-period);
+  if (trs.length < period) return null;
 
-  return (
-    recent.reduce(
-      (a, b) => a + b,
-      0
-    ) / recent.length
-  );
+  let atr = 0;
+
+  for (let i = 0; i < period; i++) {
+    atr += trs[i];
+  }
+
+  atr /= period;
+
+  for (let i = period; i < trs.length; i++) {
+    atr =
+      ((atr * (period - 1)) + trs[i]) / period;
+  }
+
+  return atr;
 }
 
-// ------------------------------------------------------
-// ADX
-// ------------------------------------------------------
+// ================================
+// PRICE TREND
+// ================================
 
-function ADX(
-  candles,
-  period = 14
-) {
+function getTrend(candles) {
+  const closes = candles.map(c => c.close);
 
-  if (
-    candles.length <
-    period * 2 + 5
-  ) {
-    return null;
+  const fast = ema(closes, 9);
+  const slow = ema(closes, 21);
+
+  if (fast === null || slow === null) {
+    return "NEUTRAL";
   }
 
-  let trs = [];
-  let plusDM = [];
-  let minusDM = [];
-
-  for (
-    let i = 1;
-    i < candles.length;
-    i++
-  ) {
-
-    const current =
-      candles[i];
-
-    const previous =
-      candles[i - 1];
-
-    const upMove =
-      current.high -
-      previous.high;
-
-    const downMove =
-      previous.low -
-      current.low;
-
-    plusDM.push(
-      upMove > downMove &&
-      upMove > 0
-        ? upMove
-        : 0
-    );
-
-    minusDM.push(
-      downMove > upMove &&
-      downMove > 0
-        ? downMove
-        : 0
-    );
-
-    trs.push(
-      Math.max(
-        current.high -
-          current.low,
-
-        Math.abs(
-          current.high -
-          previous.close
-        ),
-
-        Math.abs(
-          current.low -
-          previous.close
-        )
-      )
-    );
-  }
-
-  const tr =
-    trs.slice(-period)
-      .reduce(
-        (a, b) => a + b,
-        0
-      );
-
-  const plus =
-    plusDM
-      .slice(-period)
-      .reduce(
-        (a, b) => a + b,
-        0
-      );
-
-  const minus =
-    minusDM
-      .slice(-period)
-      .reduce(
-        (a, b) => a + b,
-        0
-      );
-
-  if (tr === 0) {
-    return 0;
-  }
-
-  const plusDI =
-    100 * plus / tr;
-
-  const minusDI =
-    100 * minus / tr;
-
-  const denominator =
-    plusDI + minusDI;
-
-  if (denominator === 0) {
-    return 0;
-  }
-
-  return (
-    100 *
-    Math.abs(
-      plusDI - minusDI
-    ) /
-    denominator
-  );
-}
-
-// ------------------------------------------------------
-// CANDLE STRUCTURE
-// ------------------------------------------------------
-
-function candleDirection(
-  candle
-) {
-
-  if (
-    candle.close >
-    candle.open
-  ) {
+  if (fast > slow) {
     return "UP";
   }
 
-  if (
-    candle.close <
-    candle.open
-  ) {
+  if (fast < slow) {
     return "DOWN";
   }
 
-  return "FLAT";
+  return "NEUTRAL";
 }
 
-// ------------------------------------------------------
-// ANALYZE ONE TIMEFRAME
-// ------------------------------------------------------
+// ================================
+// MOMENTUM
+// ================================
 
-function analyzeTimeframe(
-  candles
-) {
-
-  // IMPORTANT:
-  // Last candle may still be forming.
-  // Therefore we do NOT use it.
-  const closed =
-    candles.slice(0, -1);
-
-  if (
-    closed.length < 80
-  ) {
-    return null;
+function getMomentum(candles) {
+  if (candles.length < 10) {
+    return "NEUTRAL";
   }
 
-  const closes =
-    closed.map(
-      c => c.close
-    );
+  const last = candles[candles.length - 1];
+  const previous = candles[candles.length - 6];
 
-  const last =
-    closed[
-      closed.length - 1
-    ];
-
-  const previous =
-    closed[
-      closed.length - 2
-    ];
-
-  const ema9 =
-    EMA(closes, 9);
-
-  const ema21 =
-    EMA(closes, 21);
-
-  const ema50 =
-    EMA(closes, 50);
-
-  const rsi =
-    RSI(closes, 14);
-
-  const macd =
-    MACD(closes);
-
-  const atr =
-    ATR(closed, 14);
-
-  const adx =
-    ADX(closed, 14);
-
-  if (
-    ema9 === null ||
-    ema21 === null ||
-    ema50 === null ||
-    rsi === null ||
-    macd === null ||
-    atr === null ||
-    adx === null
-  ) {
-    return null;
+  if (last.close > previous.close) {
+    return "UP";
   }
 
-  let callScore = 0;
-  let putScore = 0;
-
-  const reasons = [];
-
-  // ----------------------------------------------------
-  // TREND
-  // ----------------------------------------------------
-
-  if (
-    ema9 > ema21 &&
-    ema21 > ema50
-  ) {
-
-    callScore += 20;
-
-    reasons.push(
-      "EMA trend bullish"
-    );
+  if (last.close < previous.close) {
+    return "DOWN";
   }
 
-  if (
-    ema9 < ema21 &&
-    ema21 < ema50
-  ) {
-
-    putScore += 20;
-
-    reasons.push(
-      "EMA trend bearish"
-    );
-  }
-
-  // ----------------------------------------------------
-  // PRICE POSITION
-  // ----------------------------------------------------
-
-  if (
-    last.close > ema9 &&
-    last.close > ema21
-  ) {
-
-    callScore += 15;
-  }
-
-  if (
-    last.close < ema9 &&
-    last.close < ema21
-  ) {
-
-    putScore += 15;
-  }
-
-  // ----------------------------------------------------
-  // RSI
-  // ----------------------------------------------------
-
-  if (
-    rsi >= 52 &&
-    rsi <= 68
-  ) {
-
-    callScore += 15;
-  }
-
-  if (
-    rsi <= 48 &&
-    rsi >= 32
-  ) {
-
-    putScore += 15;
-  }
-
-  // Avoid extreme RSI
-  if (
-    rsi > 72 ||
-    rsi < 28
-  ) {
-
-    callScore -= 10;
-    putScore -= 10;
-  }
-
-  // ----------------------------------------------------
-  // MACD
-  // ----------------------------------------------------
-
-  if (macd > 0) {
-    callScore += 15;
-  }
-
-  if (macd < 0) {
-    putScore += 15;
-  }
-
-  // ----------------------------------------------------
-  // ADX TREND STRENGTH
-  // ----------------------------------------------------
-
-  if (adx >= 20) {
-
-    if (
-      callScore >
-      putScore
-    ) {
-
-      callScore += 15;
-    }
-
-    if (
-      putScore >
-      callScore
-    ) {
-
-      putScore += 15;
-    }
-  }
-
-  // ----------------------------------------------------
-  // CANDLE CONFIRMATION
-  // ----------------------------------------------------
-
-  const direction =
-    candleDirection(last);
-
-  if (
-    direction === "UP"
-  ) {
-
-    callScore += 10;
-  }
-
-  if (
-    direction === "DOWN"
-  ) {
-
-    putScore += 10;
-  }
-
-  // ----------------------------------------------------
-  // MOMENTUM
-  // ----------------------------------------------------
-
-  if (
-    last.close >
-    previous.close
-  ) {
-
-    callScore += 10;
-  }
-
-  if (
-    last.close <
-    previous.close
-  ) {
-
-    putScore += 10;
-  }
-
-  // ----------------------------------------------------
-  // VOLATILITY FILTER
-  // ----------------------------------------------------
-
-  const volatility =
-    atr / last.close;
-
-  // If market is almost completely dead,
-  // do not force a trade.
-  if (
-    volatility < 0.00005
-  ) {
-
-    return {
-      signal: "WAIT",
-      confidence: 0,
-      reason:
-        "Market volatility too low"
-    };
-  }
-
-  const best =
-    Math.max(
-      callScore,
-      putScore
-    );
-
-  let signal = "WAIT";
-
-  if (
-    callScore >
-      putScore &&
-    callScore >=
-      MIN_CONFIDENCE
-  ) {
-
-    signal = "CALL";
-  }
-
-  if (
-    putScore >
-      callScore &&
-    putScore >=
-      MIN_CONFIDENCE
-  ) {
-
-    signal = "PUT";
-  }
-
-  return {
-    signal,
-    confidence:
-      Math.max(
-        0,
-        Math.min(
-          100,
-          best
-        )
-      ),
-    callScore,
-    putScore,
-    rsi,
-    adx,
-    atr,
-    price:
-      last.close,
-    candle:
-      direction,
-    reasons
-  };
+  return "NEUTRAL";
 }
 
-// ------------------------------------------------------
-// MULTI-TIMEFRAME CONFIRMATION
-// ------------------------------------------------------
+// ================================
+// CANDLE DIRECTION
+// ================================
 
-async function analyzeCoin(
-  coin
-) {
+function getCandleDirection(candles) {
+  const last = candles[candles.length - 1];
 
-  const analyses = {};
+  if (!last) return "NEUTRAL";
 
-  for (
-    const timeframe of TIMEFRAMES
-  ) {
-
-    try {
-
-      const candles =
-        await getCandles(
-          coin,
-          timeframe
-        );
-
-      analyses[timeframe] =
-        analyzeTimeframe(
-          candles
-        );
-
-    } catch (error) {
-
-      console.error(
-        `${coin} ${timeframe}m:`,
-        error.message
-      );
-
-      analyses[timeframe] =
-        null;
-    }
+  if (last.close > last.open) {
+    return "UP";
   }
 
-  const a1 =
-    analyses[1];
-
-  const a5 =
-    analyses[5];
-
-  const a15 =
-    analyses[15];
-
-  // ----------------------------------------------------
-  // ALL THREE TIMEFRAMES MUST AGREE
-  // ----------------------------------------------------
-
-  if (
-    !a1 ||
-    !a5 ||
-    !a15
-  ) {
-
-    return {
-      coin,
-      signal: "WAIT",
-      confidence: 0,
-      reason:
-        "Not enough timeframe data"
-    };
+  if (last.close < last.open) {
+    return "DOWN";
   }
 
-  const signals = [
-    a1.signal,
-    a5.signal,
-    a15.signal
-  ];
-
-  const callCount =
-    signals.filter(
-      x => x === "CALL"
-    ).length;
-
-  const putCount =
-    signals.filter(
-      x => x === "PUT"
-    ).length;
-
-  // STRICT:
-  // At least 1m + 5m + 15m need same direction.
-  if (
-    callCount !== 3 &&
-    putCount !== 3
-  ) {
-
-    return {
-      coin,
-      signal: "WAIT",
-      confidence: 0,
-      reason:
-        "Timeframes do not fully agree"
-    };
-  }
-
-  const signal =
-    callCount === 3
-      ? "CALL"
-      : "PUT";
-
-  // ----------------------------------------------------
-  // COMBINE CONFIDENCE
-  // ----------------------------------------------------
-
-  const average =
-    (
-      a1.confidence +
-      a5.confidence +
-      a15.confidence
-    ) / 3;
-
-  // Additional bonus for complete agreement
-  const agreementBonus = 5;
-
-  const confidence =
-    Math.min(
-      100,
-      Math.round(
-        average +
-        agreementBonus
-      )
-    );
-
-  if (
-    confidence <
-    MIN_CONFIDENCE
-  ) {
-
-    return {
-      coin,
-      signal: "WAIT",
-      confidence,
-      reason:
-        "Overall confidence below 90%"
-    };
-  }
-
-  // ----------------------------------------------------
-  // CHOOSE BEST TIMEFRAME
-  // ----------------------------------------------------
-
-  const candidates = [
-    {
-      timeframe: 1,
-      confidence:
-        a1.confidence
-    },
-    {
-      timeframe: 5,
-      confidence:
-        a5.confidence
-    },
-    {
-      timeframe: 15,
-      confidence:
-        a15.confidence
-    }
-  ];
-
-  candidates.sort(
-    (a, b) =>
-      b.confidence -
-      a.confidence
-  );
-
-  const bestTimeframe =
-    candidates[0].timeframe;
-
-  return {
-    coin,
-    signal,
-    confidence,
-    timeframe:
-      bestTimeframe,
-    analyses: {
-      1: a1,
-      5: a5,
-      15: a15
-    },
-    reason:
-      "All 1m / 5m / 15m timeframes agree"
-  };
+  return "NEUTRAL";
 }
 
-// ------------------------------------------------------
-// FIND BEST CRYPTO
-// ------------------------------------------------------
+// ================================
+// VOLUME CONFIRMATION
+// ================================
 
-async function findBestSignal() {
+function getVolumeConfirmation(candles) {
+  if (candles.length < 21) {
+    return false;
+  }
 
+  const last = candles[candles.length - 1];
+
+  let average = 0;
+
+  for (let i = candles.length - 21; i < candles.length - 1; i++) {
+    average += candles[i].volume;
+  }
+
+  average /= 20;
+
+  return last.volume >= average;
+}
+
+// ================================
+// ANALYZE ONE COIN
+// ================================
+
+async function analyzeCoin(symbol) {
   const results = [];
 
-  for (
-    const coin of COINS
-  ) {
-
+  for (const timeframe of TIMEFRAMES) {
     try {
+      const candles = await getCandles(symbol, timeframe);
 
-      const result =
-        await analyzeCoin(
-          coin
-        );
+      if (candles.length < 50) {
+        results.push({
+          coin: symbol,
+          timeframe,
+          signal: "WAIT",
+          confidence: 0,
+          reason: "Not enough market data."
+        });
 
-      results.push(result);
+        continue;
+      }
+
+      const closes = candles.map(c => c.close);
+
+      const currentPrice =
+        closes[closes.length - 1];
+
+      const rsi =
+        calculateRSI(closes, 14);
+
+      const atr =
+        calculateATR(candles, 14);
+
+      const trend =
+        getTrend(candles);
+
+      const momentum =
+        getMomentum(candles);
+
+      const candle =
+        getCandleDirection(candles);
+
+      const volume =
+        getVolumeConfirmation(candles);
+
+      let upPoints = 0;
+      let downPoints = 0;
+
+      const reasons = [];
+
+      // EMA TREND
+      if (trend === "UP") {
+        upPoints += 25;
+        reasons.push("EMA trend UP");
+      }
+
+      if (trend === "DOWN") {
+        downPoints += 25;
+        reasons.push("EMA trend DOWN");
+      }
+
+      // RSI
+      if (rsi !== null) {
+        if (rsi >= 50 && rsi <= 68) {
+          upPoints += 20;
+          reasons.push("RSI bullish");
+        }
+
+        if (rsi <= 50 && rsi >= 32) {
+          downPoints += 20;
+          reasons.push("RSI bearish");
+        }
+      }
+
+      // MOMENTUM
+      if (momentum === "UP") {
+        upPoints += 20;
+        reasons.push("Momentum UP");
+      }
+
+      if (momentum === "DOWN") {
+        downPoints += 20;
+        reasons.push("Momentum DOWN");
+      }
+
+      // CANDLE
+      if (candle === "UP") {
+        upPoints += 15;
+        reasons.push("Bullish candle");
+      }
+
+      if (candle === "DOWN") {
+        downPoints += 15;
+        reasons.push("Bearish candle");
+      }
+
+      // VOLUME
+      if (volume) {
+        if (upPoints > downPoints) {
+          upPoints += 10;
+        } else if (downPoints > upPoints) {
+          downPoints += 10;
+        }
+
+        reasons.push("Volume confirmation");
+      }
+
+      // VOLATILITY
+      if (atr !== null && currentPrice > 0) {
+        const volatility =
+          atr / currentPrice;
+
+        // Avoid extremely quiet markets.
+        if (volatility > 0.0001) {
+          if (upPoints > downPoints) {
+            upPoints += 10;
+          } else if (downPoints > upPoints) {
+            downPoints += 10;
+          }
+
+          reasons.push("Sufficient volatility");
+        }
+      }
+
+      const total =
+        upPoints + downPoints;
+
+      let signal = "WAIT";
+      let confidence = 0;
+
+      if (total > 0) {
+        if (upPoints > downPoints) {
+          confidence =
+            Math.round((upPoints / 100) * 100);
+
+          if (confidence >= MIN_CONFIDENCE) {
+            signal = "CALL";
+          }
+        }
+
+        if (downPoints > upPoints) {
+          confidence =
+            Math.round((downPoints / 100) * 100);
+
+          if (confidence >= MIN_CONFIDENCE) {
+            signal = "PUT";
+          }
+        }
+      }
+
+      // HARD FILTER
+      if (confidence < MIN_CONFIDENCE) {
+        signal = "WAIT";
+      }
+
+      results.push({
+        coin: symbol,
+        timeframe,
+        signal,
+        confidence,
+        price: currentPrice,
+        rsi: rsi ? Number(rsi.toFixed(2)) : null,
+        trend,
+        momentum,
+        candle,
+        reason:
+          signal === "WAIT"
+            ? "Not enough independent confirmations."
+            : reasons.join(" • ")
+      });
 
     } catch (error) {
-
       console.error(
-        `${coin}:`,
+        `${symbol} ${timeframe}:`,
         error.message
       );
+
+      results.push({
+        coin: symbol,
+        timeframe,
+        signal: "WAIT",
+        confidence: 0,
+        reason: error.message
+      });
     }
   }
 
-  // Only real signals
+  return results;
+}
+
+// ================================
+// FIND BEST SIGNAL
+// ================================
+
+async function findBestSignal() {
+  const allResults = [];
+
+  for (const coin of COINS) {
+    const results =
+      await analyzeCoin(coin);
+
+    allResults.push(...results);
+  }
+
   const valid =
-    results.filter(
-      result =>
-        result.signal !==
-        "WAIT" &&
-        result.confidence >=
-        MIN_CONFIDENCE
+    allResults.filter(result =>
+      result.signal !== "WAIT" &&
+      result.confidence >= MIN_CONFIDENCE
     );
 
-  if (
-    valid.length === 0
-  ) {
-
+  if (valid.length === 0) {
     return {
       signal: "WAIT",
       confidence: 0,
       reason:
-        "No crypto has enough confirmation"
+        "No crypto has enough confirmation."
     };
   }
 
   valid.sort(
     (a, b) =>
-      b.confidence -
-      a.confidence
+      b.confidence - a.confidence
   );
 
   return valid[0];
 }
 
-// ------------------------------------------------------
+// ================================
 // FORMAT SIGNAL
-// ------------------------------------------------------
+// ================================
 
-function formatSignal(
-  result
-) {
-
-  if (
-    result.signal ===
-    "WAIT"
-  ) {
-
+function formatSignal(result) {
+  if (result.signal === "WAIT") {
     return (
       "🟡 WAIT — NO TRADE\n\n" +
-
       "Crypto: ALL\n" +
-
       "Timeframes checked:\n" +
       "1m • 5m • 15m\n\n" +
-
       "Confidence: " +
-      `${result.confidence || 0}%\n\n` +
+      (result.confidence || 0) +
+      "%\n\n" +
+      "Reason:\n" +
+      (result.reason ||
+        "No strong confirmation.")
+    );
+  }
 
-      "❌ " +
-      `${result.reason}\n\n` +
+  return (
+    "🚨 CRYPTO SIGNAL\n\n" +
+    "Asset: " +
+    result.coin +
+    "\n" +
+    "Signal: " +
+    result.signal +
+    "\n" +
+    "Timeframe: " +
+    result.timeframe +
+    "\n" +
+    "Confidence: " +
+    result.confidence +
+    "%\n\n" +
+    "Price: " +
+    result.price +
+    "\n\n" +
+    "RSI: " +
+    (result.rsi ?? "N/A") +
+    "\n" +
+    "Trend: " +
+    result.trend +
+    "\n" +
+    "Momentum: " +
+    result.momentum +
+    "\n\n" +
+    "Reason:\n" +
+    (result.reason ||
+      "Multiple confirmations detected.")
+  );
+}
 
-      "هی
+// ================================
+// HANDLE MESSAGE
+// ================================
+
+async function handleMessage(message) {
+  if (!message || !message.chat) {
+    return;
+  }
+
+  const chatId =
+    message.chat.id;
+
+  const text =
+    (message.text || "")
+      .trim()
+      .toLowerCase();
+
+  // ONLY signal command
+  if (
+    text !== "/signal" &&
+    text !== "signal"
+  ) {
+    return;
+  }
+
+  await sendMessage(
+    chatId,
+    "🔎 Analyzing crypto markets...\n\n" +
+    "Checking:\n" +
+    "• BTC\n" +
+    "• ETH\n" +
+    "• SOL\n" +
+    "• XRP\n" +
+    "• BNB\n" +
+    "• ADA\n" +
+    "• DOGE\n" +
+    "• AVAX\n" +
+    "• LINK\n" +
+    "• LTC\n\n" +
+    "Timeframes: 1m • 5m • 15m\n\n" +
+    "Please wait..."
+  );
+
+  try {
+    const result =
+      await findBestSignal();
+
+    const text =
+      formatSignal(result);
+
+    await sendMessage(
+      chatId,
+      text
+    );
+
+  } catch (error) {
+    console.error(
+      "Signal error:",
+      error
+    );
+
+    await sendMessage(
+      chatId,
+      "🟡 WAIT — NO TRADE\n\n" +
+      "The market data could not be verified.\n\n" +
+      "No signal was sent."
+    );
+  }
+}
+
+// ================================
+// TELEGRAM POLLING
+// ================================
+
+let telegramOffset = 0;
+
+async function pollTelegram() {
+  try {
+    const result =
+      await telegram("getUpdates", {
+        offset: telegramOffset,
+        timeout: 25,
+        allowed_updates: ["message"]
+      });
+
+    if (
+      result.ok &&
+      Array.isArray(result.result)
+    ) {
+      for (const update of result.result) {
+        telegramOffset =
+          update.update_id + 1;
+
+        try {
+          await handleMessage(
+            update.message
+          );
+        } catch (error) {
+          console.error(
+            "Message error:",
+            error.message
+          );
+        }
+      }
+    }
+
+  } catch (error) {
+    console.error(
+      "Telegram polling error:",
+      error.message
+    );
+
+    await new Promise(resolve =>
+      setTimeout(resolve, 3000)
+    );
+  }
+
+  setImmediate(pollTelegram);
+}
+
+// ================================
+// START
+// ================================
+
+async function main() {
+  console.log(
+    "================================"
+  );
+
+  console.log(
+    "Telegram Crypto Signal Bot"
+  );
+
+  console.log(
+    "Starting..."
+  );
+
+  console.log(
+    "Minimum confidence:",
+    MIN_CONFIDENCE + "%"
+  );
+
+  console.log(
+    "Ideal confidence:",
+    IDEAL_CONFIDENCE + "%"
+  );
+
+  console.log(
+    "Crypto only: YES"
+  );
+
+  console.log(
+    "OTC: NO"
+  );
+
+  console.log(
+    "Martingale: NO"
+  );
+
+  console.log(
+    "Quotex account connection: NO"
+  );
+
+  console.log(
+    "================================"
+  );
+
+  await pollTelegram();
+}
+
+main().catch(error => {
+  console.error(
+    "Fatal error:",
+    error
+  );
+
+  process.exit(1);
+});
